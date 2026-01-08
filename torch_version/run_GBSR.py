@@ -14,6 +14,7 @@ from evaluate import *
 from log import Logger
 from GBSR import GBSR
 from rec_dataset import Dataset
+import wandb
 
 
 
@@ -23,11 +24,11 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='douban_book', help='?')
     parser.add_argument('--runid', type=str, default='0', help='current log id')
     parser.add_argument('--device_id', type=str, default='0', help='?')
-    parser.add_argument('--epochs', type=int, default=1000, help='maximum number of epochs to train for')
+    parser.add_argument('--epochs', type=int, default=5000, help='maximum number of epochs to train for')
     parser.add_argument('--batch_size', type=int, default=2048, help='batch size')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--topk', type=int, default=20, help='Topk value for evaluation')   # NDCG@20 as convergency metric
-    parser.add_argument('--early_stops', type=int, default=10, help='model convergent when NDCG@20 not increase for x epochs')
+    parser.add_argument('--early_stops', type=int, default=30, help='model convergent when NDCG@20 not increase for x epochs')
     parser.add_argument('--num_neg', type=int, default=1, help='number of negetiva samples for each [u,i] pair')
 
     ### model parameters ###
@@ -64,13 +65,17 @@ def eval_test(model):
 if __name__ == '__main__':
     seed_everything(2023)
     args = parse_args()
-    if args.dataset == 'yelp':
-        args.num_user = 19539
-        args.num_item = 22228
-    elif args.dataset == 'epinions':
-        args.num_user = 18202
-        args.num_item = 47449
-
+    # if args.dataset == 'yelp':
+    #     args.num_user = 19539
+    #     args.num_item = 22228
+    # elif args.dataset == 'epinions':
+    #     args.num_user = 18202
+    #     args.num_item = 47449
+    wandb.init(
+            project="GBSR",
+            name=f"{args.dataset}_{args.lr}_{args.beta}",
+        )
+    
     args.data_path = '../datasets/' + args.dataset + '/'
     record_path = '../saved/' + args.dataset + '/GBSR/' + args.runid + '/'
     model_save_path = record_path + 'models/'
@@ -81,6 +86,11 @@ if __name__ == '__main__':
         log.write(arg + '=' + str(getattr(args, arg)) + '\n')
 
     rec_data = Dataset(args)
+    args.num_user = rec_data.num_user
+    args.num_item = rec_data.num_item
+    log.write(f'Updated args.num_user to {args.num_user}\n')
+    log.write(f'Updated args.num_item to {args.num_item}\n')
+
     rec_model = GBSR(args, rec_data)
     device = torch.device("cuda:" + str(args.device_id) if torch.cuda.is_available() else "cpu")
     rec_model.to(device)
@@ -128,26 +138,56 @@ if __name__ == '__main__':
         t2 = time()
 
 
-        # ***************************  evaluation on Top-20  *****************************#
+# *************************** evaluation on Top-20  *****************************#
         if epoch % 1 == 0:
             early_stop += 1
             user_emb, item_emb = eval_test(rec_model)
-            hr, recall, ndcg = num_faiss_evaluate(rec_data.testdata, rec_data.traindata, [20], user_emb, item_emb,
-                                        rec_data.testdata.keys())
+            
+            # [수정] testdata가 dict면 keys()를, list면 인덱스 리스트를 생성
+            if isinstance(rec_data.testdata, dict):
+                test_users = list(rec_data.testdata.keys())
+            else:
+                test_users = list(range(len(rec_data.testdata)))
+
+            # [수정] test_users 변수를 인자로 전달 (반환값 5개 받기도 확인!)
+            hr, recall, ndcg, precision, mrr = num_faiss_evaluate(rec_data.testdata, rec_data.traindata, [10, 20], user_emb, item_emb, test_users)
+            
             if ndcg[20] >= max_ndcg or ndcg[20] == max_ndcg and recall[20] >= max_recall:
                 best_epoch = epoch
                 max_hr = hr[20]
                 max_recall = recall[20]
                 max_ndcg = ndcg[20]
+                best_r = recall[10]
+                best_n = ndcg[10]
+                best_h = hr[10]
+                best_p = precision[10]
+                best_m = mrr[10]
+                # 필요시 max_precision, max_mrr도 기록 가능
+            
+            # [수정] 로그 출력에 Precision, MRR 추가
             log.write(set_color(
-                'Current Evaluation: Epoch:{:d},  topk:{:d}, recall:{:.4f}, ndcg:{:.4f}\n'.format(epoch, topk,
-                                                                                                  recall[20], ndcg[20]),
-                'green'))
+                'Current Eval: Epoch:{:d}, topk:{:d}, recall:{:.4f}, ndcg:{:.4f}, prec:{:.4f}, mrr:{:.4f}\n'.format(
+                    epoch, topk, recall[20], ndcg[20], precision[20], mrr[20]), 'green'))
+            
             log.write(set_color(
-                'Best Evaluation: Epoch:{:d},  topk:{:d}, recall:{:.4f}, ndcg:{:.4f}\n'.format(best_epoch, topk,
-                                                                                               max_recall, max_ndcg),
-                'red'))
-
+                'Best Eval: Epoch:{:d}, topk:{:d}, recall:{:.4f}, ndcg:{:.4f}\n'.format(best_epoch, topk,
+                                                                                        max_recall, max_ndcg), 'red'))
+            wandb.log({
+                "val/epoch": epoch,
+                "val/loss": mean_total_loss,
+                "val/Precision@10": precision[10],
+                "val/Recall@10": recall[10],
+                "val/NDCG@10": ndcg[10],
+                "val/MRR@10": mrr[10],
+                "val/HR@10": hr[10],
+                
+                "val/Precision@20": precision[20],
+                "val/Recall@20": recall[20],
+                "val/NDCG@20": ndcg[20],
+                "val/MRR@20": mrr[20],
+                "val/HR@20": hr[20],
+            })
+            
             if ndcg[20] == max_ndcg:
                 early_stop = 0
                 best_ckpt = 'epoch_' + str(epoch) + '_ndcg_' + str(ndcg[20]) + '.ckpt'
@@ -159,6 +199,20 @@ if __name__ == '__main__':
                     oldest_file = model_files.pop(0)
                     os.remove(oldest_file)
                     print(f"Removed old model file: {oldest_file}")
+                wandb.log({
+                    "best/epoch": epoch,
+                    "best/Precision@10": precision[10],
+                    "best/Recall@10": recall[10],
+                    "best/NDCG@10": ndcg[10],
+                    "best/MRR@10": mrr[10],
+                    "best/HR@10": hr[10],
+
+                    "best/Precision@20": precision[20],
+                    "best/Recall@20": recall[20],
+                    "best/NDCG@20": ndcg[20],
+                    "best/MRR@20": mrr[20],
+                    "best/HR@20": hr[20],
+                })
 
             t3 = time()
             log.write('traintime:{:.4f}, valtime:{:.4f}\n\n'.format(t2 - t1, t3 - t2))
@@ -167,14 +221,25 @@ if __name__ == '__main__':
                 log.write(set_color('max_recall@20=:{:.4f}, max_ndcg@20=:{:.4f}\n'.format(max_recall, max_ndcg), 'green'))
                 break
 
-    # ***********************************  start evaluate testdata   ********************************#
+    # *********************************** start evaluate testdata   ********************************#
+    # 학습 종료 후 최종 테스트 부분 수정
     rec_model.load_state_dict(torch.load(model_save_path + best_ckpt))
     user_emb, item_emb = eval_test(rec_model)
-    hr, recall, ndcg = num_faiss_evaluate(rec_data.testdata, rec_data.traindata,
+    
+    # [수정] 여기도 동일하게 test_users 생성
+    if isinstance(rec_data.testdata, dict):
+        test_users = list(rec_data.testdata.keys())
+    else:
+        test_users = list(range(len(rec_data.testdata)))
+
+    # [수정] test_users 전달 및 반환값 5개 수신
+    hr, recall, ndcg, precision, mrr = num_faiss_evaluate(rec_data.testdata, rec_data.traindata,
                                           [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100], user_emb, item_emb,
-                                          rec_data.testdata.keys())
+                                          test_users)
     for key in ndcg.keys():
+        # [수정] 최종 로그 출력에 Precision, MRR 추가
         log.write(set_color(
-            'Topk:{:3d}, HR:{:.4f}, Recall:{:.4f}, NDCG:{:.4f}\n'.format(key, hr[key], recall[key], ndcg[key]), 'cyan'))
+            'Topk:{:3d}, HR:{:.4f}, Recall:{:.4f}, NDCG:{:.4f}, Prec:{:.4f}, MRR:{:.4f}\n'.format(
+                key, hr[key], recall[key], ndcg[key], precision[key], mrr[key]), 'cyan'))
     log.close()
     print('END')

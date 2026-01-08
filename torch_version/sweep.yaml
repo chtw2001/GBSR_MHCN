@@ -1,0 +1,12 @@
+method: grid
+project: GBSR
+program: run_GBSR.py
+parameters:
+  dataset:
+    values: ["lastfm"] # "filmtrust", "lastfm", "ciao", "douban", "yelp", "epinions"
+  lr:
+    values: [1e-3, 5e-4, 1e-4]
+  beta:
+    values: [5, 10, 20]
+  device_id:
+    value: 1

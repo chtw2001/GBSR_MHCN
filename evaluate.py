@@ -2,179 +2,173 @@ import faiss
 import numpy as np
 import math
 from collections import defaultdict
-import pdb
-import numba as nb
-from numba import prange
-from sklearn.metrics import roc_auc_score
-import multiprocessing as mp
+import torch
 
+# --- [NEW] 사용자 제공 Metric 함수 (Pure Python) ---
+def f1(prec, recall):
+    if (prec + recall) != 0:
+        return 2 * prec * recall / (prec + recall)
+    else:
+        return 0
 
-# nb.config.NUMBA_DEFAULT_NUM_THREADS = 4
-@nb.njit()
-def compute_ranking_metrics(testusers, testdata, traindata, topk_list, user_rank_pred_items):
-    all_metrics = []
-    for i in prange(len(testusers)):
-        u = testusers[i]
-        one_metrics = []
-        mask_items = traindata[i]
-        test_items = testdata[i]
-        pos_length = len(test_items)
-        # pred_items找出ranking结果中排除训练样本的前topk个items
-        pred_items_all = user_rank_pred_items[u]
-        max_length_candicate = len(mask_items) + topk_list[-1]
-        pred_items = [item for item in pred_items_all[:max_length_candicate] if item not in mask_items][:topk_list[-1]]
-        for topk in topk_list:
-            hit_value = 0
-            dcg_value = 0
-            for idx in prange(topk):
-                if pred_items[idx] in test_items:
-                    hit_value += 1
-                    dcg_value += math.log(2) / math.log(idx + 2)
-            target_length = min(topk, pos_length)
-            idcg = 0.0
-            for k in prange(target_length):
-                idcg = idcg + math.log(2) / math.log(k + 2)
-            hr_cur = hit_value / target_length
-            recall_cur = hit_value / pos_length
-            ndcg_cur = dcg_value / idcg
-            one_metrics.append([hr_cur, recall_cur, ndcg_cur])
-        all_metrics.append(one_metrics)
-    return all_metrics
+def computeTopNAccuracy(GroundTruth, predictedIndices, topN):
+    precision = [] 
+    recall = [] 
+    NDCG = [] 
+    MRR = []
+    HR = []
+    F1 = []
+    
+    for index in range(len(topN)):
+        sumForPrecision = 0
+        sumForRecall = 0
+        sumForNdcg = 0
+        sumForMRR = 0
+        sumForHR = 0
+        for i in range(len(predictedIndices)):
+            if len(GroundTruth[i]) != 0:
+                mrrFlag = True
+                userHit = 0
+                userMRR = 0
+                dcg = 0
+                idcg = 0
+                idcgCount = len(GroundTruth[i])
+                ndcg = 0
+                hit=False
+                
+                for j in range(topN[index]):
+                    if predictedIndices[i][j] in GroundTruth[i]:
+                        # if Hit!
+                        dcg += 1.0/math.log2(j + 2)
+                        if mrrFlag:
+                            userMRR = (1.0/(j+1.0))
+                            mrrFlag = False
+                        userHit += 1
+                        hit=True
+                
+                    if idcgCount > 0:
+                        idcg += 1.0/math.log2(j + 2)
+                        idcgCount = idcgCount-1
+                    
+                            
+                if(idcg != 0):
+                    ndcg += (dcg/idcg)
+                    
+                sumForPrecision += userHit / topN[index]
+                sumForRecall += userHit / len(GroundTruth[i])               
+                sumForNdcg += ndcg
+                sumForMRR += userMRR
 
-# '''
+                if hit:
+                    sumForHR += 1  # Increment sumForHR if there was a hit
+        
+        precision.append(round(sumForPrecision / len(predictedIndices), 8))
+        recall.append(round(sumForRecall / len(predictedIndices), 8))
+        NDCG.append(round(sumForNdcg / len(predictedIndices), 8))
+        MRR.append(round(sumForMRR / len(predictedIndices), 8))
+        HR.append(round(sumForHR / len(predictedIndices), 8))
+        F1.append(round(f1(precision[index], recall[index]), 8))
+        
+    return precision, recall, NDCG, MRR, HR, F1
+# ----------------------------------------------------
+
 def num_faiss_evaluate(_test_ratings, _train_ratings, _topk_list, _user_matrix, _item_matrix, _test_users):
     '''
-    Evaluation for ranking results
-    Topk-largest based on faiss search
-    Speeding computation based on numba
+    GBSR Reproduction Evaluation
     '''
-    hr_topk_list = defaultdict(list)
-    recall_topk_list = defaultdict(list)
-    ndcg_topk_list = defaultdict(list)
-    hr_out, recall_out, ndcg_out = {}, {}, {}
-
-    ###  faiss search  ###
-    test_users = _test_users #list(_test_ratings.keys())
+    # 1. Faiss Search
     query_vectors = _user_matrix
     dim = _user_matrix.shape[-1]
     index = faiss.IndexFlatIP(dim)
     index.add(_item_matrix)
-    max_mask_items_length = max(len(_train_ratings[user]) for user in _train_ratings.keys())
-    sim, _user_rank_pred_items = index.search(query_vectors, _topk_list[-1] + max_mask_items_length)
+    
+    # ---------------------------------------------------------
+    # [핵심 수정] Train Data 구조 정규화 (Dictionary로 통일)
+    # 리스트여도, 딕셔너리(str key)여도 모두 {int_id: set(items)} 형태로 변환
+    # ---------------------------------------------------------
+    normalized_train = {}
+    
+    if isinstance(_train_ratings, list):
+        # 리스트인 경우 인덱스가 유저 ID
+        for u_id, items in enumerate(_train_ratings):
+            if items is not None:
+                normalized_train[u_id] = set(items)
+    elif isinstance(_train_ratings, dict):
+        # 딕셔너리인 경우 (key가 str일수도, int일수도 있음)
+        for u_id, items in _train_ratings.items():
+            if items is not None:
+                try:
+                    normalized_train[int(u_id)] = set(items)
+                except:
+                    pass
+    
+    # 마스킹 길이 계산 (검색 범위 설정을 위해)
+    if normalized_train:
+        max_mask_items_length = max(len(v) for v in normalized_train.values())
+    else:
+        max_mask_items_length = 0
 
-    testdata = [list(_test_ratings[user]) for user in test_users]
-    # traindata = [list(_train_ratings[user]) if len(_train_ratings[user]) > 0 else [-1] for user in test_users]
-    traindata = [list(_train_ratings[user]) if user in _train_ratings.keys() else [-1] for user in test_users]
-    all_metrics = compute_ranking_metrics(nb.typed.List(test_users), nb.typed.List(testdata),
-                                          nb.typed.List(traindata), nb.typed.List(_topk_list),
-                                          nb.typed.List(_user_rank_pred_items))
+    k_max = _topk_list[-1]
+    search_k = k_max + max_mask_items_length
+    
+    # 전체 검색 수행
+    sim, pred_items_all = index.search(query_vectors, search_k)
 
-    ###  output evaluation metrics  ###
-    for i, one_metrics in enumerate(all_metrics):
-        j = 0
-        for topk in _topk_list:
-            hr_topk_list[topk].append(one_metrics[j][0])
-            recall_topk_list[topk].append(one_metrics[j][1])
-            ndcg_topk_list[topk].append(one_metrics[j][2])
-            j += 1
-    for topk in _topk_list:
-        recall_out[topk] = np.mean(recall_topk_list[topk])
-        hr_out[topk] = np.mean(hr_topk_list[topk])
-        ndcg_out[topk] = np.mean(ndcg_topk_list[topk])
-    return hr_out, recall_out, ndcg_out
+    # 2. 평가 수행
+    GroundTruth = []
+    predictedIndices = []
+    
+    # Test Data도 정규화하여 접근
+    is_test_dict = isinstance(_test_ratings, dict)
 
+    for idx, u in enumerate(_test_users):
+        u = int(u) # 유저 ID 정수형 보장
+        
+        # (1) Ground Truth 가져오기
+        gt_items = set()
+        if is_test_dict:
+            # 키 타입 체크 (int로 먼저 시도, 안되면 str로 시도)
+            if u in _test_ratings:
+                gt_items = set(_test_ratings[u])
+            elif str(u) in _test_ratings:
+                gt_items = set(_test_ratings[str(u)])
+        else:
+            if u < len(_test_ratings) and _test_ratings[u] is not None:
+                gt_items = set(_test_ratings[u])
+        
+        GroundTruth.append(gt_items)
 
-############################################# Head&Tail evaluation ##############################################
-@nb.njit()
-def compute_head_tail_ranking_metrics(testusers, testdata, traindata, topk_list, user_rank_pred_items, head_items, tail_items):
-    all_metrics = []
-    for i in prange(len(testusers)):
-        u = testusers[i]
-        one_metrics = []
-        mask_items = traindata[i]
-        test_items = testdata[i]
-        pos_length = len(test_items)
-        # pred_items找出ranking结果中排除训练样本的前topk个items
-        pred_items_all = user_rank_pred_items[u]
-        max_length_candicate = len(mask_items) + topk_list[-1]
-        pred_items = [item for item in pred_items_all[:max_length_candicate] if item not in mask_items][:topk_list[-1]]
-        for topk in topk_list:
-            head_hit_value, tail_hit_value = 0, 0
-            head_dcg_value, tail_dcg_value = 0, 0
-            for idx in prange(topk):
-                if pred_items[idx] in test_items:
-                    if pred_items[idx] in head_items:
-                        head_hit_value += 1
-                        head_dcg_value += math.log(2) / math.log(idx + 2)
-                    elif pred_items[idx] in tail_items:
-                        tail_hit_value += 1
-                        tail_dcg_value += math.log(2) / math.log(idx + 2)
-                    else:
-                        print('without this item')
-            target_length = min(topk, pos_length)
-            idcg = 0.0
-            for k in prange(target_length):
-                idcg = idcg + math.log(2) / math.log(k + 2)
-            head_hr_cur = head_hit_value / target_length
-            head_recall_cur = head_hit_value / pos_length
-            head_ndcg_cur = head_dcg_value / idcg
-            tail_hr_cur = tail_hit_value / target_length
-            tail_recall_cur = tail_hit_value / pos_length
-            tail_ndcg_cur = tail_dcg_value / idcg
-            one_metrics.append([head_hr_cur, head_recall_cur, head_ndcg_cur,
-                                tail_hr_cur, tail_recall_cur, tail_ndcg_cur])
-        all_metrics.append(one_metrics)
-    return all_metrics
+        # (2) Train Masking (정규화된 맵 사용 -> 데이터 유실 방지)
+        train_items = normalized_train.get(u, set())
 
-# '''
-def num_faiss_evaluate_head_tail(_test_ratings, _train_ratings, _topk_list, _user_matrix, _item_matrix, _test_users, _head_items, _tail_items):
-    '''
-    Evaluation for ranking results
-    Topk-largest based on faiss search
-    Speeding computation based on numba
-    '''
-    hr_topk_list_h = defaultdict(list)
-    recall_topk_list_h = defaultdict(list)
-    ndcg_topk_list_h = defaultdict(list)
-    hr_topk_list_t = defaultdict(list)
-    recall_topk_list_t = defaultdict(list)
-    ndcg_topk_list_t = defaultdict(list)
-    hr_out_h, recall_out_h, ndcg_out_h = {}, {}, {}
-    hr_out_t, recall_out_t, ndcg_out_t = {}, {}, {}
+        # [디버깅] 첫 5명에 대해 마스킹 개수 출력 (이게 20~30개 이상 나와야 정상)
+        if idx < 5:
+            print(f"[DEBUG] User {u}: GT Size={len(gt_items)}, Masking Size={len(train_items)}")
 
-    ###  faiss search  ###
-    test_users = _test_users #list(_test_ratings.keys())
-    query_vectors = _user_matrix
-    dim = _user_matrix.shape[-1]
-    index = faiss.IndexFlatIP(dim)
-    index.add(_item_matrix)
-    max_mask_items_length = max(len(_train_ratings[user]) for user in _train_ratings.keys())
-    sim, _user_rank_pred_items = index.search(query_vectors, _topk_list[-1] + max_mask_items_length)
+        # Prediction 필터링
+        preds = []
+        # 반드시 유저 ID(u)로 Faiss 결과 인덱싱
+        if u < len(pred_items_all):
+            for item in pred_items_all[u]: 
+                if item not in train_items:
+                    preds.append(item)
+                if len(preds) >= k_max:
+                    break
+        else:
+            # 혹시 모를 인덱스 에러 방지 (더미)
+            preds = []
+            
+        predictedIndices.append(preds)
 
-    testdata = [list(_test_ratings[user]) for user in test_users]
-    traindata = [list(_train_ratings[user]) if len(_train_ratings[user]) > 0 else [-1] for user in test_users]
-    # traindata = [list(_train_ratings[user]) if user in _train_ratings.keys() else [-1] for user in test_users]
-    all_metrics = compute_head_tail_ranking_metrics(nb.typed.List(test_users), nb.typed.List(testdata),
-                                          nb.typed.List(traindata), nb.typed.List(_topk_list),
-                                          nb.typed.List(_user_rank_pred_items), nb.typed.List(_head_items),
-                                          nb.typed.List(_tail_items))
+    # 3. Metric 계산 (사용자 제공 함수)
+    precision, recall, NDCG, MRR, HR, F1 = computeTopNAccuracy(GroundTruth, predictedIndices, _topk_list)
 
-    ###  output evaluation metrics  ###
-    for i, one_metrics in enumerate(all_metrics):
-        j = 0
-        for topk in _topk_list:
-            hr_topk_list_h[topk].append(one_metrics[j][0])
-            recall_topk_list_h[topk].append(one_metrics[j][1])
-            ndcg_topk_list_h[topk].append(one_metrics[j][2])
-            hr_topk_list_t[topk].append(one_metrics[j][3])
-            recall_topk_list_t[topk].append(one_metrics[j][4])
-            ndcg_topk_list_t[topk].append(one_metrics[j][5])
-            j += 1
-    for topk in _topk_list:
-        recall_out_h[topk] = np.mean(recall_topk_list_h[topk])
-        hr_out_h[topk] = np.mean(hr_topk_list_h[topk])
-        ndcg_out_h[topk] = np.mean(ndcg_topk_list_h[topk])
-        recall_out_t[topk] = np.mean(recall_topk_list_t[topk])
-        hr_out_t[topk] = np.mean(hr_topk_list_t[topk])
-        ndcg_out_t[topk] = np.mean(ndcg_topk_list_t[topk])
-    return recall_out_h, ndcg_out_h, recall_out_t, ndcg_out_t
+    hr_out, recall_out, ndcg_out, precision_out, mrr_out = {}, {}, {}, {}, {}
+    for i, k in enumerate(_topk_list):
+        precision_out[k] = precision[i]
+        recall_out[k] = recall[i]
+        ndcg_out[k] = NDCG[i]
+        mrr_out[k] = MRR[i]
+        hr_out[k] = HR[i]
+
+    return hr_out, recall_out, ndcg_out, precision_out, mrr_out

@@ -33,6 +33,7 @@ def parse_args():
     parser.add_argument('--topk', type=int, default=20, help='Topk value for evaluation')   # NDCG@20 as convergency metric
     parser.add_argument('--early_stops', type=int, default=30, help='model convergent when NDCG@20 not increase for x epochs')
     parser.add_argument('--num_neg', type=int, default=1, help='number of negetiva samples for each [u,i] pair')
+    parser.add_argument('--seed', type=int, default=42, help='max iid')
 
     ### model parameters ###
     parser.add_argument('--n_layers', type=int, default=3, help='?')
@@ -68,8 +69,41 @@ def eval_test(model):
 
 
 if __name__ == '__main__':
-    seed_everything(2023)
+    # seed_everything(2023)
     args = parse_args()
+    dataset = args.dataset
+    
+    if dataset == 'filmtrust':
+        # args.n_layers = 2
+        # args.lr = 1e-2
+        args.lambda1 = 1e-1
+        args.lambda2 = 5e-2
+    elif dataset == 'lastfm':
+        # args.n_layers = 3
+        # args.lr = 1e-4
+        args.lambda1 = 1e-1
+        args.lambda2 = 1e-2
+    elif dataset == 'ciao':
+        # args.n_layers = 2
+        # args.lr = 1e-4
+        args.lambda1 = 1e-2
+        args.lambda2 = 5e-2
+    elif dataset == 'douban':
+        # args.n_layers = 2
+        # args.lr = 1e-4
+        args.lambda1 = 1e-1
+        args.lambda2 = 1e-2
+    elif dataset == 'yelp':
+        # args.n_layers = 2
+        # args.lr = 5e-5
+        args.lambda1 = 1e-1
+        args.lambda2 = 2.5e-1
+    elif dataset == 'epinions':
+        # args.n_layers = 2
+        # args.lr = 1e-4
+        args.lambda1 = 1e-1
+        args.lambda2 = 1e-2
+        
     # if args.dataset == 'yelp':
     #     args.num_user = 19539
     #     args.num_item = 22228
@@ -78,7 +112,7 @@ if __name__ == '__main__':
     #     args.num_item = 47449
     wandb.init(
             project="GBSR_MHCN",
-            name=f"{args.dataset}_{args.beta}_{args.ff}",
+            name=f"{args.dataset}_{args.n_layers}_{args.beta}_{args.sigma}",
         )
     
     args.data_path = '../datasets/' + args.dataset + '/'

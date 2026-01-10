@@ -1,12 +1,19 @@
 method: grid
-project: GBSR
+project: GBSR_MHCN
 program: run_GBSR.py
 parameters:
+  device_id:
+    value: 0
   dataset:
     values: ["lastfm"] # "filmtrust", "lastfm", "ciao", "douban", "yelp", "epinions"
   lr:
-    values: [1e-3, 5e-4, 1e-4]
+    values: [1e-3]
+  n_layers:
+    values: [1] # , 2, 3, 4]
   beta:
-    values: [5, 10, 20]
-  device_id:
-    value: 1
+    values: [5] # , 10, 20, 30]
+  sigma:
+    values: [2.5] # , 0.25]
+  seed:
+    values: [42] # , 1004, 2025]
+

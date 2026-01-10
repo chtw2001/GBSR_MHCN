@@ -1,6 +1,4 @@
 **/logs
 **/wandb
 **/saved
-run_model.sh
-sweep.yaml
 **/__pycache__

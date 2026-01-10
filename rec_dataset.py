@@ -45,6 +45,8 @@ class Dataset(object):
         print(f"Final Dataset Info: Users={self.num_user}, Items={self.num_item}, Total Nodes={self.num_node}")
 
         # 3. 학습용 리스트 생성
+        if not hasattr(self, 'social_i'):
+            self.social_i, self.social_j = [], []
         self.training_user, self.training_item = [], []
         for u, items in self.traindata.items():
             for i in items:
@@ -52,6 +54,20 @@ class Dataset(object):
                 self.training_item.append(i)
         
         print(f"Total Training Interactions: {len(self.training_user)}")
+
+        # MHCN 호환 필드 구성
+        self.n_users = self.num_user
+        self.n_items = self.num_item
+        self.train_h_list = list(self.training_user)
+        self.train_t_list = list(self.training_item)
+        self.train_user_dict = {u: list(items) for u, items in self.traindata.items()}
+        self.train_item_dict = {}
+        for u, items in self.traindata.items():
+            for i in items:
+                self.train_item_dict.setdefault(i, []).append(u)
+        self.train_social_h_list = list(self.social_i)
+        self.train_social_t_list = list(self.social_j)
+        self.train_social_w_list = None
 
         # 4. 블랙리스트 네거티브 샘플러 구축
         print("Building negative sampler...")

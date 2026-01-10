@@ -77,28 +77,38 @@ class MHCN(nn.Module):
         self.R = to_tensor(R,self.config)
         
     def buildSparseRelationMatrix(self):
-        row, col, entries = [], [], []
-        for i in range(len(self.data.train_social_h_list)):
-        #for pair in self.social.relation:
-            # symmetric matrix
-            row += [self.data.train_social_h_list[i]]
-            col += [self.data.train_social_t_list[i]]
-            entries += [1.0]
+        row = np.array(self.data.train_social_h_list)
+        col = np.array(self.data.train_social_t_list)
+        motif_threshold = 1e-3
+
+        if hasattr(self.data, 'train_social_w_list') and self.data.train_social_w_list is not None:
+            min_len = min(len(row), len(self.data.train_social_w_list))
+            row = row[:min_len]
+            col = col[:min_len]
+            w = np.array(self.data.train_social_w_list[:min_len])
+            entries = np.where(w > motif_threshold, 1.0, 0.0).astype(np.float32)
+        else:
+            entries = np.ones(len(row), dtype=np.float32)
         AdjacencyMatrix = coo_matrix(
             (entries, (row, col)),
             shape=(self.num_users, self.num_users),
             dtype=np.float32)
         return AdjacencyMatrix
 
+    def update_channels_from_S_fast(self, rebuild_R=False):
+        self.H_s, self.H_j, self.H_p = self.buildMotifInducedAdjacencyMatrix()
+        self.H_s = to_tensor(self.H_s, self.config)
+        self.H_j = to_tensor(self.H_j, self.config)
+        self.H_p = to_tensor(self.H_p, self.config)
+        if rebuild_R:
+            R = self.buildJointAdjacency()
+            self.R = to_tensor(R, self.config)
+
     # user-item
     def buildSparseRatingMatrix(self):
-        row, col, entries = [], [], []
-        for i in range(len(self.data.train_h_list)):
-        #for pair in self.social.relation:
-            # symmetric matrix
-            row += [self.data.train_h_list[i]]
-            col += [self.data.train_t_list[i]]
-            entries += [1.0]
+        row = np.array(self.data.train_h_list)
+        col = np.array(self.data.train_t_list)
+        entries = np.ones(len(row), dtype=np.float32)
         ratingMatrix = coo_matrix(
             (entries, (row, col)),
             shape=(self.num_users, self.num_items),

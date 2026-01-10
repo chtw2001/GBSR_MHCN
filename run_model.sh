@@ -1,3 +1,4 @@
+export PATH=/home/taekwon/.conda/envs/GBSR/bin:$PATH
 timestamp=$(date +'%y_%m_%d_%H_%M_%S')
 logfile=../logs/$timestamp.log
 cd torch_version

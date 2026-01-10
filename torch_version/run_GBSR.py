@@ -13,15 +13,18 @@ from set import *
 from evaluate import *
 from log import Logger
 from GBSR import GBSR
-from rec_dataset import Dataset
 import wandb
-
+from loader.data_loader import SRDataLoader
+from loader.loader_base import BatchSampler
+import torch.utils.data as torch_data
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='GBSR Parameters')
     ### general parameters ###
     parser.add_argument('--dataset', type=str, default='douban_book', help='?')
+    parser.add_argument('--data_path', type=str, default='../datasets',
+                        help='dataset root path (idea-MHCN format)')
     parser.add_argument('--runid', type=str, default='0', help='current log id')
     parser.add_argument('--device_id', type=str, default='0', help='?')
     parser.add_argument('--epochs', type=int, default=5000, help='maximum number of epochs to train for')
@@ -32,12 +35,14 @@ def parse_args():
     parser.add_argument('--num_neg', type=int, default=1, help='number of negetiva samples for each [u,i] pair')
 
     ### model parameters ###
-    parser.add_argument('--gcn_layer', type=int, default=3, help='?')
+    parser.add_argument('--n_layers', type=int, default=3, help='?')
     parser.add_argument('--num_user', type=int, default=13024, help='max uid')
     parser.add_argument('--num_item', type=int, default=22347, help='max iid')
     parser.add_argument('--latent_dim', type=int, default=64, help='latent embedding dimension')
     parser.add_argument('--init_type', type=str, default='norm', help='?')
     parser.add_argument('--l2_reg', type=float, default=1e-4, help='?')
+    parser.add_argument('--lambda1', type=float, default=0.1, help='MHCN reg loss weight')
+    parser.add_argument('--lambda2', type=float, default=0.01, help='MHCN self-supervised loss weight')
     parser.add_argument('--beta', type=float, default=5.0, help='?')
     parser.add_argument('--sigma', type=float, default=0.25, help='?')
     parser.add_argument('--edge_bias', type=float, default=0.5, help='observation bias of social relations')
@@ -52,13 +57,13 @@ def makir_dir(path):
 def save_file(save_path):
     copyfile('./GBSR.py', save_path + 'GBSR.py')
     copyfile('./run_GBSR.py', save_path + 'run_GBSR.py')
-    copyfile('../rec_dataset.py', save_path + 'rec_dataset.py')
+    copyfile('./loader/data_loader.py', save_path + 'data_loader.py')
+    copyfile('./loader/loader_base.py', save_path + 'loader_base.py')
 
 def eval_test(model):
     model.eval()
     with torch.no_grad():
-        masked_adj_matrix = model.graph_learner(model.user_embeddings)
-        user_emb, item_emb = model.forward(masked_adj_matrix)
+        user_emb, item_emb = model.infer_embedding()
     return user_emb.cpu().detach().numpy(), item_emb.cpu().detach().numpy()
 
 
@@ -72,8 +77,8 @@ if __name__ == '__main__':
     #     args.num_user = 18202
     #     args.num_item = 47449
     wandb.init(
-            project="GBSR",
-            name=f"{args.dataset}_{args.lr}_{args.beta}",
+            project="GBSR_MHCN",
+            name=f"{args.dataset}_{args.beta}_{args.ff}",
         )
     
     args.data_path = '../datasets/' + args.dataset + '/'
@@ -85,14 +90,19 @@ if __name__ == '__main__':
     for arg in vars(args):
         log.write(arg + '=' + str(getattr(args, arg)) + '\n')
 
-    rec_data = Dataset(args)
-    args.num_user = rec_data.num_user
-    args.num_item = rec_data.num_item
+    device = torch.device("cuda:" + str(args.device_id) if torch.cuda.is_available() else "cpu")
+    args.device = device
+    data = SRDataLoader(args)
+    train_loader = torch_data.DataLoader(
+        data, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    sampler = BatchSampler(data, n_neg=args.num_neg)
+
+    args.num_user = data.n_users
+    args.num_item = data.n_items
     log.write(f'Updated args.num_user to {args.num_user}\n')
     log.write(f'Updated args.num_item to {args.num_item}\n')
 
-    rec_model = GBSR(args, rec_data)
-    device = torch.device("cuda:" + str(args.device_id) if torch.cuda.is_available() else "cpu")
+    rec_model = GBSR(args, data)
     rec_model.to(device)
     optimizer = torch.optim.Adam(rec_model.parameters(), lr=args.lr)
 
@@ -112,12 +122,10 @@ if __name__ == '__main__':
         t1 = time()
         sum_auc, all_rank_loss, all_reg_loss, all_ib_loss, all_total_loss, batch_num = 0, 0, 0, 0, 0, 0
         rec_model.train()
-        #  batch数据
-        loader = rec_data._batch_sampling(num_negative=args.num_neg)
-        for u, i, j in tqdm(loader, desc='All_batch'):
-            u = torch.tensor(u).type(torch.long).to(device)  # [batch_size]
-            i = torch.tensor(i).type(torch.long).to(device)  # [batch_size]
-            j = torch.tensor(j).type(torch.long).to(device)  # [batch_size]
+        for batch_user, batch_pos_item, _ in train_loader:
+            u = batch_user.long().to(device)
+            i = batch_pos_item.long().to(device)
+            j = sampler.sample(batch_user).squeeze(1).long().to(device)
             auc, rank_loss, reg_loss, ib_loss, total_loss = rec_model.calculate_all_loss(u, i, j)
             optimizer.zero_grad()
             total_loss.backward()
@@ -143,14 +151,9 @@ if __name__ == '__main__':
             early_stop += 1
             user_emb, item_emb = eval_test(rec_model)
             
-            # [수정] testdata가 dict면 keys()를, list면 인덱스 리스트를 생성
-            if isinstance(rec_data.testdata, dict):
-                test_users = list(rec_data.testdata.keys())
-            else:
-                test_users = list(range(len(rec_data.testdata)))
-
-            # [수정] test_users 변수를 인자로 전달 (반환값 5개 받기도 확인!)
-            hr, recall, ndcg, precision, mrr = num_faiss_evaluate(rec_data.testdata, rec_data.traindata, [10, 20], user_emb, item_emb, test_users)
+            test_users = list(data.test_user_dict.keys())
+            hr, recall, ndcg, precision, mrr = num_faiss_evaluate(
+                data.test_user_dict, data.train_user_dict, [10, 20], user_emb, item_emb, test_users)
             
             if ndcg[20] >= max_ndcg or ndcg[20] == max_ndcg and recall[20] >= max_recall:
                 best_epoch = epoch
@@ -226,16 +229,11 @@ if __name__ == '__main__':
     rec_model.load_state_dict(torch.load(model_save_path + best_ckpt))
     user_emb, item_emb = eval_test(rec_model)
     
-    # [수정] 여기도 동일하게 test_users 생성
-    if isinstance(rec_data.testdata, dict):
-        test_users = list(rec_data.testdata.keys())
-    else:
-        test_users = list(range(len(rec_data.testdata)))
-
-    # [수정] test_users 전달 및 반환값 5개 수신
-    hr, recall, ndcg, precision, mrr = num_faiss_evaluate(rec_data.testdata, rec_data.traindata,
-                                          [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100], user_emb, item_emb,
-                                          test_users)
+    test_users = list(data.test_user_dict.keys())
+    hr, recall, ndcg, precision, mrr = num_faiss_evaluate(
+        data.test_user_dict, data.train_user_dict,
+        [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100], user_emb, item_emb,
+        test_users)
     for key in ndcg.keys():
         # [수정] 최종 로그 출력에 Precision, MRR 추가
         log.write(set_color(

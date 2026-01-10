@@ -28,7 +28,7 @@ class MHCN(nn.Module):
         super(MHCN, self).__init__()
         self.config = args
         self.n_layers = self.config.n_layers
-        self.emb_size = self.config.embed_dim
+        self.emb_size = self.config.latent_dim
         self.data=data
 
         self.num_users, self.num_items= self.data.n_users,self.data.n_items

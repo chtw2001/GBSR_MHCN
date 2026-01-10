@@ -15,10 +15,10 @@ class DataLoaderBase(data.Dataset):
         self.data_dir = os.path.join(args.data_path, args.dataset)
         self.num_ng=1
 
-        self.train_file = os.path.join(self.data_dir, 'train_list.npy')
-        self.valid_file = os.path.join(self.data_dir, 'valid_list.npy')
-        self.test_file = os.path.join(self.data_dir, 'test_list.npy')
-        self.social_file = os.path.join(self.data_dir, 'social_list.npy')
+        self.train_file = os.path.join(self.data_dir, 'traindata.npy')
+        self.valid_file = os.path.join(self.data_dir, 'testdata.npy')
+        self.test_file = os.path.join(self.data_dir, 'testdata.npy')
+        self.social_file = os.path.join(self.data_dir, 'user_users_d.npy')
         
         self.cf_train_data, self.train_user_dict = self.load_data(self.train_file)
         self.cf_valid_data, self.valid_user_dict = self.load_data(self.valid_file)

@@ -115,7 +115,10 @@ if __name__ == '__main__':
             name=f"{args.dataset}_{args.n_layers}_{args.beta}_{args.sigma}",
         )
     
-    args.data_path = '../datasets/' + args.dataset + '/'
+    # torch_version/에서 실행되므로 상대 경로 설정
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    args.data_path = os.path.join(project_root, 'datasets')
     record_path = '../saved/' + args.dataset + '/GBSR/' + args.runid + '/'
     model_save_path = record_path + 'models/'
     makir_dir(model_save_path)

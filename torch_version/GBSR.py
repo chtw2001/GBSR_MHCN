@@ -33,7 +33,7 @@ class GBSR(nn.Module):
         args.device = self.device
         self.lambda1 = args.lambda1
         self.lambda2 = args.lambda2
-        self.latent_dim = args.embed_dim
+        self.latent_dim = args.latent_dim
 
         self.backbone = MHCN(dataset, args).to(self.device)
         self.base_H_s = self.backbone.H_s

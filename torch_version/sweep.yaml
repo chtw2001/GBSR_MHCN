@@ -5,15 +5,15 @@ parameters:
   device_id:
     value: 0
   dataset:
-    values: ["lastfm"] # "filmtrust", "lastfm", "ciao", "douban", "yelp", "epinions"
+    values: ["filmtrust", "lastfm", "ciao", "douban", "yelp", "epinions"] # "filmtrust", "lastfm", "ciao", "douban", "yelp", "epinions"
   lr:
     values: [1e-3]
   n_layers:
-    values: [1] # , 2, 3, 4]
+    values: [2, 3]
   beta:
-    values: [5] # , 10, 20, 30]
+    values: [2, 10] # , 20, 30]
   sigma:
-    values: [2.5] # , 0.25]
+    values: [2.5, 0.25]
   seed:
-    values: [42] # , 1004, 2025]
+    values: [42, 1004, 2025]
 
